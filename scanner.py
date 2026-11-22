@@ -77,4 +77,16 @@ def manage_trade(t, sym, strat, date_str, open_p, high_p, low_p, close_p, prev_h
         if t["Status"] == "PENDING":
             action = "Buy" if side == "LONG" else "Short"
             exit_rule = f"hold {HOLD_DAYS}d" if strat == "v1.0" else "Prev H/L exit"
-            return f"  • `{strat}`: 🟡 **PENDING {side}** — {action} next Open
+            msg = (
+                f"  • `{strat}`: 🟡 **PENDING {side}** — "
+                f"{action} next Open ({exit_rule}) | Stop: ~${stop_p:.2f}"
+            )
+            return msg, False
+        entry_p = float(t["EntryPrice"])
+        unrealized = calc_return(side, entry_p, close_p)
+        hold_tag = f"Day {t['DaysHeld']}/{HOLD_DAYS}" if strat == "v1.0" else f"Day {t['DaysHeld']} (Prev H/L)"
+        msg = (
+            f"  • `{strat}`: ⏳ **OPEN {side}** ({hold_tag}) | "
+            f"Entry: ${entry_p:.2f} (`{unrealized:+.2f}%`) | Stop: ${stop_p:.2f}"
+        )
+        return msg, False
