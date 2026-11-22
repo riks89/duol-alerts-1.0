@@ -1,1 +1,3 @@
-SignalDate,Side,Status,EntryDate,EntryPrice,StopPrice,ExitDate,ExitPrice,DaysHeld,ReturnPct,LastUpdated
+Ticker,SignalDate,Side,Status,EntryDate,EntryPrice,StopPrice,ExitDate,ExitPrice,DaysHeld,ReturnPct,LastUpdated
+RDDT,2026-11-20,LONG,PENDING,,,72.79,,,0,,2026-11-20
+HIMS,2026-11-20,LONG,PENDING,,,10.48,,,0,,2026-11-20
