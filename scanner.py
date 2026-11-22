@@ -106,7 +106,7 @@ def process_ticker(sym, trades):
                 t["EntryPrice"] = f"{open_p:.2f}"
                 t["DaysHeld"] = "1"
                 lines.append(
-                    f"▶️ **{sym} FILLED {side}** ({date_str}) at Open **${open_p:.2f}** \vert{} Stop:${stop_p:.2f}"
+                    f"▶️ **{sym} FILLED {side}** ({date_str}) at Open **${open_p:.2f}** | Stop: ${stop_p:.2f}"
                 )
                 important = True
             else:
@@ -143,7 +143,7 @@ def process_ticker(sym, trades):
                 unrealized = calc_return(side, entry_p, close_p)
                 lines.append(
                     f"⏳ **{sym} HOLDING {side}** (Day {days_held}/{HOLD_DAYS}) | "
-                    f"Close: ${close_p:.2f} (`{unrealized:+.2f}\%`) \vert{} Stop: ${stop_p:.2f}"
+                    f"Close: ${close_p:.2f} (`{unrealized:+.2f}%`) | Stop: ${stop_p:.2f}"
                 )
 
             t["LastUpdated"] = date_str
@@ -156,4 +156,69 @@ def process_ticker(sym, trades):
             earnings = ticker.get_earnings_dates(limit=8)
             if earnings is not None and not earnings.empty:
                 e_dates = pd.to_datetime(earnings.index).tz_localize(None).normalize()
-                today = pd.Timestamp(date_str
+                today = pd.Timestamp(date_str)
+                near_earnings = any((e_dates >= today) & (e_dates <= today + pd.Timedelta(days=7)))
+        except Exception:
+            pass
+
+        if near_earnings:
+            lines.append(f"⏸️ **{sym} EARNINGS BLACKOUT** ({date_str}) — Skipping setups.")
+        elif ret < -SHOCK_THRESH and rvol < 1.5:
+            stop_price = close_p - (ATR_MULT * atr)
+            trades.append({
+                "Ticker": sym, "SignalDate": date_str, "Side": "LONG", "Status": "PENDING",
+                "EntryDate": "", "EntryPrice": "", "StopPrice": f"{stop_price:.2f}",
+                "ExitDate": "", "ExitPrice": "", "DaysHeld": "0", "ReturnPct": "",
+                "LastUpdated": date_str
+            })
+            lines.append(
+                f"🟢 **{sym} LONG SETUP** ({date_str})\n"
+                f"• Close: ${close_p:.2f} (`{ret:+.2f}%`) | RVOL: {rvol:.2f}x\n"
+                f"• Action: Buy at tomorrow's Open, hold {HOLD_DAYS}d | 2x ATR Stop: ~${stop_price:.2f}"
+            )
+            important = True
+        elif ret > SHOCK_THRESH and close_p < sma50:
+            stop_price = close_p + (ATR_MULT * atr)
+            trades.append({
+                "Ticker": sym, "SignalDate": date_str, "Side": "SHORT", "Status": "PENDING",
+                "EntryDate": "", "EntryPrice": "", "StopPrice": f"{stop_price:.2f}",
+                "ExitDate": "", "ExitPrice": "", "DaysHeld": "0", "ReturnPct": "",
+                "LastUpdated": date_str
+            })
+            lines.append(
+                f"🔴 **{sym} SHORT SETUP** ({date_str})\n"
+                f"• Close: ${close_p:.2f} (`{ret:+.2f}%`) | 50-SMA: ${sma50:.2f}\n"
+                f"• Action: Short at tomorrow's Open, hold {HOLD_DAYS}d | 2x ATR Stop: ~${stop_price:.2f}"
+            )
+            important = True
+        else:
+            lines.append(
+                f"⚪ **{sym} ({date_str}):** No Setup — "
+                f"Close: ${close_p:.2f} (`{ret:+.2f}%`) | RVOL: {rvol:.2f}x | 50-SMA: ${sma50:.2f}"
+            )
+
+    return "\n".join(lines), important
+
+def run_scanner():
+    trades = load_trades()
+    sections = []
+    any_important = False
+
+    for sym in TICKERS:
+        try:
+            msg, imp = process_ticker(sym, trades)
+            sections.append(msg)
+            any_important = any_important or imp
+        except Exception as e:
+            sections.append(f"⚠️ **{sym} Error:** {e}")
+
+    save_trades(trades)
+    final_msg = "\n\n".join(sections) + "\n" + format_stats(trades)
+    print(final_msg)
+
+    if any_important or SEND_NO_SIGNAL:
+        resp = requests.post(WEBHOOK_URL, json={"content": final_msg})
+        resp.raise_for_status()
+
+if __name__ == "__main__":
+    run_scanner()
