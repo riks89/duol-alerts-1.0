@@ -1,7 +1,8 @@
-name: DUOL Daily Scanner
+name: Daily Stock Scanners
 
 on:
   schedule:
+    # Runs Monday–Friday at 21:15 UTC (15 minutes after US market close during EST)
     - cron: '15 21 * * 1-5'
   workflow_dispatch:
 
@@ -11,6 +12,7 @@ permissions:
 jobs:
   scan:
     runs-on: ubuntu-latest
+
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -21,16 +23,21 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install yfinance pandas requests
+        run: |
+          python -m pip install --upgrade pip
+          pip install yfinance pandas requests
 
-      - name: Run DUOL Scanner
+      - name: Run Scanners
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-        run: python scanner.py
-
-      - name: Commit updated trade log
         run: |
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add trades.csv
-          git diff --staged --quiet || (git commit -m "Update forward-test trade log [skip ci]" && git push)
+          python scanner.py
+          python uber_scanner.py
+
+      - name: Commit updated trade logs
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add trades.csv uber_trades.csv
+          git diff --staged --quiet || git commit -m "Update daily trade logs"
+          git push
