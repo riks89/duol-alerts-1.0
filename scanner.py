@@ -73,12 +73,21 @@ def format_stats(trades):
 
 def manage_trade(t, sym, strat, date_str, open_p, high_p, low_p, close_p, prev_high, prev_low):
     if t["LastUpdated"] == date_str:
-        return f"  • `{strat}`: Already updated (`{t['Status']}` {t['Side']}, Day {t['DaysHeld']})", False
-
-    side = t["Side"]
-    stop_p = float(t["StopPrice"])
-    important = False
-    prefix = ""
+            side = t["Side"]
+            stop_p = float(t["StopPrice"])
+            if t["Status"] == "PENDING":
+                action = "Buy" if side == "LONG" else "Short"
+                exit_rule = f"hold {HOLD_DAYS}d" if strat == "v1.0" else "Prev H/L exit"
+                return f"  • `{strat}`: 🟡 **PENDING {side}** — {action} next Open ({exit_rule}) | Stop: ~${stop_p:.2f}", False
+            entry_p = float(t["EntryPrice"])
+            unrealized = calc_return(side, entry_p, close_p)
+            hold_tag = f"Day {t['DaysHeld']}/{HOLD_DAYS}" if strat == "v1.0" else f"Day {t['DaysHeld']} (Prev H/L)"
+            return f"  • `{strat}`: ⏳ **OPEN {side}** ({hold_tag}) | Entry: ${entry_p:.2f} (`{unrealized:+.2f}%`) | Stop: ${stop_p:.2f}", False
+    
+        side = t["Side"]
+        stop_p = float(t["StopPrice"])
+        important = False
+        prefix = ""
 
     if t["Status"] == "PENDING":
         t["Status"] = "OPEN"
