@@ -5,6 +5,7 @@ import pandas as pd
 import requests
 
 WEBHOOK_URL = os.environ["DISCORD_WEBHOOK_URL"]
+TICKERS = ["DUOL", "RDDT", "HIMS"]
 SHOCK_THRESH = 3.5
 ATR_MULT = 2.0
 HOLD_DAYS = 5
@@ -12,7 +13,7 @@ SEND_NO_SIGNAL = True
 LOG_FILE = "trades.csv"
 
 COLUMNS = [
-    "SignalDate", "Side", "Status", "EntryDate", "EntryPrice",
+    "Ticker", "SignalDate", "Side", "Status", "EntryDate", "EntryPrice",
     "StopPrice", "ExitDate", "ExitPrice", "DaysHeld", "ReturnPct", "LastUpdated"
 ]
 
@@ -20,7 +21,12 @@ def load_trades():
     if not os.path.exists(LOG_FILE):
         return []
     with open(LOG_FILE, mode="r", newline="") as f:
-        return list(csv.DictReader(f))
+        rows = list(csv.DictReader(f))
+    # Auto-migrate older trades.csv rows that lacked a Ticker column
+    for r in rows:
+        if "Ticker" not in r or not r["Ticker"]:
+            r["Ticker"] = "DUOL"
+    return rows
 
 def save_trades(trades):
     with open(LOG_FILE, mode="w", newline="") as f:
@@ -42,12 +48,12 @@ def format_stats(trades):
     win_rate = (wins / len(rets)) * 100
     cum_ret = sum(rets)
     return (
-        f"\n📊 **Forward-Test Log:** {len(closed)} closed | "
+        f"\n📊 **Forward-Test Log (All Tickers):** {len(closed)} closed | "
         f"Win Rate: {win_rate:.1f}% | Sum Return: {cum_ret:+.2f}%"
     )
 
-def check_duol():
-    ticker = yf.Ticker("DUOL")
+def process_ticker(sym, trades):
+    ticker = yf.Ticker(sym)
     df = ticker.history(period="6mo")
 
     df["Daily_Ret"] = df["Close"].pct_change() * 100
@@ -72,19 +78,21 @@ def check_duol():
     sma50 = float(latest["SMA50"])
     atr = float(latest["ATR"])
 
-    trades = load_trades()
-    active_idx = next((i for i, t in enumerate(trades) if t["Status"] in ("PENDING", "OPEN")), None)
+    active_idx = next(
+        (i for i, t in enumerate(trades) if t["Ticker"] == sym and t["Status"] in ("PENDING", "OPEN")),
+        None
+    )
 
-    messages = []
-    should_notify = SEND_NO_SIGNAL
+    lines = []
+    important = False
     acted_today = False
 
-    # 1. Manage existing PENDING or OPEN trade
+    # 1. Manage existing PENDING or OPEN trade for this ticker
     if active_idx is not None:
         t = trades[active_idx]
         if t["LastUpdated"] == date_str:
-            messages.append(
-                f"ℹ️ **DUOL ({date_str}):** Already processed today. "
+            lines.append(
+                f"ℹ️ **{sym} ({date_str}):** Already processed today. "
                 f"Active `{t['Side']}` is `{t['Status']}` (Day {t['DaysHeld']}/{HOLD_DAYS})."
             )
             acted_today = True
@@ -92,23 +100,21 @@ def check_duol():
             side = t["Side"]
             stop_p = float(t["StopPrice"])
 
-            # Fill PENDING trade at today's Open
             if t["Status"] == "PENDING":
                 t["Status"] = "OPEN"
                 t["EntryDate"] = date_str
                 t["EntryPrice"] = f"{open_p:.2f}"
                 t["DaysHeld"] = "1"
-                messages.append(
-                    f"▶️ **FILLED {side}** ({date_str}) at Open **${open_p:.2f}** | Stop: ${stop_p:.2f}"
+                lines.append(
+                    f"▶️ **{sym} FILLED {side}** ({date_str}) at Open **${open_p:.2f}** \vert{} Stop:${stop_p:.2f}"
                 )
-                should_notify = True
+                important = True
             else:
                 t["DaysHeld"] = str(int(t["DaysHeld"]) + 1)
 
             entry_p = float(t["EntryPrice"])
             days_held = int(t["DaysHeld"])
 
-            # Check Stop-Loss hit intraday (or overnight gap past stop)
             stopped = (side == "LONG" and low_p <= stop_p) or (side == "SHORT" and high_p >= stop_p)
             if stopped:
                 exit_p = min(open_p, stop_p) if side == "LONG" else max(open_p, stop_p)
@@ -117,89 +123,37 @@ def check_duol():
                 t["ExitDate"] = date_str
                 t["ExitPrice"] = f"{exit_p:.2f}"
                 t["ReturnPct"] = f"{r_pct:.2f}"
-                messages.append(
-                    f"🛑 **STOPPED OUT ({side})** on {date_str}\n"
+                lines.append(
+                    f"🛑 **{sym} STOPPED OUT ({side})** on {date_str}\n"
                     f"• Entry: ${entry_p:.2f} → Exit: ${exit_p:.2f} (`{r_pct:+.2f}%`)"
                 )
-                should_notify = True
+                important = True
             elif days_held >= HOLD_DAYS:
                 r_pct = calc_return(side, entry_p, close_p)
                 t["Status"] = "CLOSED_TIME"
                 t["ExitDate"] = date_str
                 t["ExitPrice"] = f"{close_p:.2f}"
                 t["ReturnPct"] = f"{r_pct:.2f}"
-                messages.append(
-                    f"✅ **CLOSED ({side} — Day {HOLD_DAYS})** on {date_str}\n"
+                lines.append(
+                    f"✅ **{sym} CLOSED ({side} — Day {HOLD_DAYS})** on {date_str}\n"
                     f"• Entry: ${entry_p:.2f} → Exit: ${close_p:.2f} (`{r_pct:+.2f}%`)"
                 )
-                should_notify = True
+                important = True
             else:
                 unrealized = calc_return(side, entry_p, close_p)
-                messages.append(
-                    f"⏳ **HOLDING {side}** (Day {days_held}/{HOLD_DAYS}) | "
-                    f"Close: ${close_p:.2f} (`{unrealized:+.2f}%` unrealized) | Stop: ${stop_p:.2f}"
+                lines.append(
+                    f"⏳ **{sym} HOLDING {side}** (Day {days_held}/{HOLD_DAYS}) | "
+                    f"Close: ${close_p:.2f} (`{unrealized:+.2f}\%`) \vert{} Stop: ${stop_p:.2f}"
                 )
 
             t["LastUpdated"] = date_str
             acted_today = True
 
-    # 2. If flat and didn't just close a trade today, scan for a new setup
+    # 2. If flat, scan for a new setup
     if not acted_today:
         near_earnings = False
         try:
             earnings = ticker.get_earnings_dates(limit=8)
             if earnings is not None and not earnings.empty:
                 e_dates = pd.to_datetime(earnings.index).tz_localize(None).normalize()
-                today = pd.Timestamp(date_str)
-                near_earnings = any((e_dates >= today) & (e_dates <= today + pd.Timedelta(days=7)))
-        except Exception:
-            pass
-
-        if near_earnings:
-            messages.append(f"⏸️ **EARNINGS BLACKOUT** ({date_str})\nDUOL earnings within 7 days. Skipping setups.")
-        elif ret < -SHOCK_THRESH and rvol < 1.5:
-            stop_price = close_p - (ATR_MULT * atr)
-            trades.append({
-                "SignalDate": date_str, "Side": "LONG", "Status": "PENDING",
-                "EntryDate": "", "EntryPrice": "", "StopPrice": f"{stop_price:.2f}",
-                "ExitDate": "", "ExitPrice": "", "DaysHeld": "0", "ReturnPct": "",
-                "LastUpdated": date_str
-            })
-            messages.append(
-                f"🟢 **DUOL LONG SETUP** ({date_str})\n"
-                f"• **Close:** ${close_p:.2f} (`{ret:+.2f}%`) | **RVOL:** {rvol:.2f}x\n"
-                f"• **Action:** Buy at tomorrow's Open, hold {HOLD_DAYS} trading days\n"
-                f"• **2x ATR Stop-Loss:** ~${stop_price:.2f} (ATR: ${atr:.2f})"
-            )
-            should_notify = True
-        elif ret > SHOCK_THRESH and close_p < sma50:
-            stop_price = close_p + (ATR_MULT * atr)
-            trades.append({
-                "SignalDate": date_str, "Side": "SHORT", "Status": "PENDING",
-                "EntryDate": "", "EntryPrice": "", "StopPrice": f"{stop_price:.2f}",
-                "ExitDate": "", "ExitPrice": "", "DaysHeld": "0", "ReturnPct": "",
-                "LastUpdated": date_str
-            })
-            messages.append(
-                f"🔴 **DUOL SHORT SETUP** ({date_str})\n"
-                f"• **Close:** ${close_p:.2f} (`{ret:+.2f}%`) | **50-SMA:** ${sma50:.2f}\n"
-                f"• **Action:** Short at tomorrow's Open, hold {HOLD_DAYS} trading days\n"
-                f"• **2x ATR Stop-Loss:** ~${stop_price:.2f} (ATR: ${atr:.2f})"
-            )
-            should_notify = True
-        else:
-            messages.append(
-                f"⚪ **DUOL Daily Check ({date_str}): No Setup**\n"
-                f"Close: ${close_p:.2f} (`{ret:+.2f}%`) | RVOL: {rvol:.2f}x | 50-SMA: ${sma50:.2f}"
-            )
-
-    save_trades(trades)
-    final_msg = "\n".join(messages) + format_stats(trades)
-    print(final_msg)
-
-    if should_notify:
-        resp = requests.post(WEBHOOK_URL, json={"content": final_msg})
-        resp.raise_for_status()
-
-if __name__ == "__main__":
-    check_duol()
+                today = pd.Timestamp(date_str
