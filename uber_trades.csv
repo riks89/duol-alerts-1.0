@@ -1,1 +1,3 @@
 Ticker,Strategy,SignalDate,Side,Status,EntryDate,EntryPrice,StopPrice,ExitDate,ExitPrice,DaysHeld,ReturnPct,LastUpdated
+BKNG,v1.0,2026-11-24,LONG,PENDING,,,129.21,,,0,,2026-11-24
+BKNG,v2.0,2026-11-24,LONG,PENDING,,,129.21,,,0,,2026-11-24
